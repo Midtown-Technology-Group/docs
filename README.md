@@ -48,14 +48,33 @@ Solution scope through its local proxy. The app never commits an instance URL or
 authentication token. The server-side Solution builder injects the API-matched web
 SDK during deployment.
 
-After selecting the SDK with `solution sdk update`, run the focused checks from the repository root:
+### Running the checks
+
+The tests need the Bifrost SDKs that match the instance you deploy to. A Bifrost
+instance serves both without authentication, so a clean machine or CI runner can
+fetch them directly. Set `BIFROST_URL` to that instance, for example
+`https://bifrost.example.com`, and run from the repository root:
 
 ```bash
-docker run --rm -v "$PWD:/workspace" -w /workspace python:3.12-slim \
-  sh -lc 'pip install pytest pyyaml && python -m pytest -q tests'
+export BIFROST_URL=https://bifrost.example.com
+
+# Python tests: requirements.txt, test tooling, and the instance's `bifrost` Python SDK.
+docker run --rm -e BIFROST_URL -v "$PWD:/workspace" -w /workspace python:3.13-slim \
+  sh -lc 'pip install pytest pytest-asyncio pydantic pyyaml packaging -r requirements.txt \
+    "$BIFROST_URL/api/cli/download/bifrost-cli.tar.gz" && python -m pytest -q tests'
+
+# App tests and build (Node.js 22.12 or later).
+npm --prefix apps/bifrost-docs ci
+npm --prefix apps/bifrost-docs install --no-save "bifrost@$BIFROST_URL/api/sdk/download"
 npm --prefix apps/bifrost-docs test
 npm --prefix apps/bifrost-docs run build
 ```
+
+The second `npm` command adds the instance's web SDK to `node_modules` only, as
+`bifrost solution sdk update` does: `--no-save` keeps it out of `package.json` and
+`package-lock.json`, while the lockfile still pins every other package. In a bound
+checkout, `bifrost solution sdk update . --app bifrost-docs` installs the SDK for
+you. Never commit the SDK dependency; the portability test rejects it.
 
 ## Optional IT Glue migration
 
