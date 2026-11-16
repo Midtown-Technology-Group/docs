@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import yaml
+from packaging.version import InvalidVersion, Version
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,12 +22,32 @@ def test_solution_distribution_has_no_instance_sdk_or_private_delivery_artifacts
     vite_config = (ROOT / "apps/bifrost-docs/vite.config.ts").read_text()
     readme = (ROOT / "README.md").read_text()
 
-    assert descriptor["version"] == "0.1.3"
+    # Forks and downstream installs may carry PEP 440 local labels such as
+    # ``0.1.3+site.1``; the platform compares versions with ``packaging``.
+    version = str(descriptor["version"])
+    try:
+        Version(version)
+    except InvalidVersion as exc:
+        raise AssertionError(f"descriptor version {version!r} is not PEP 440") from exc
     assert descriptor["allow_outbound_access"] is False
-    assert "bifrost" not in package["dependencies"]
-    assert package["devDependencies"]["vitest"] == "^4.1.11"
-    assert lockfile_data["packages"][""]["devDependencies"]["vitest"] == "^4.1.11"
+
+    # The instance SDK is installed at build time and never recorded in the
+    # distributed manifests.
+    lock_root = lockfile_data["packages"][""]
+    for manifest in (package, lock_root):
+        for section in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
+            assert "bifrost" not in manifest.get(section, {})
     assert '"node_modules/bifrost"' not in lockfile
+    assert "/api/sdk/download" not in json.dumps(package)
+    assert "/api/sdk/download" not in lockfile
+
+    # Vitest is a locked dev dependency; any version range is acceptable as
+    # long as package.json and the lockfile agree.
+    vitest_spec = package["devDependencies"].get("vitest")
+    assert isinstance(vitest_spec, str) and vitest_spec
+    assert "vitest" not in package.get("dependencies", {})
+    assert lock_root["devDependencies"].get("vitest") == vitest_spec
+    assert lockfile_data["packages"]["node_modules/vitest"]["dev"] is True
     assert "VITE_BIFROST_SOLUTION_ID" in vite_config
     assert "solutionId: import.meta.env.VITE_BIFROST_SOLUTION_ID" in bootstrap
     assert "window.location.origin" not in bootstrap
