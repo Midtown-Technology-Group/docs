@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, mtg]
+  push:
+    branches: [mtg]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR runs are cancelled; every push to mtg keeps its own result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Both SDKs are served by the Bifrost instance without authentication. Override
+  # with the repository Actions variable BIFROST_URL.
+  BIFROST_URL: ${{ vars.BIFROST_URL || 'https://bifrost.midtowntg.com' }}
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install test dependencies and the instance's Python SDK
+        run: |
+          python -m pip install pytest pytest-asyncio pydantic pyyaml packaging \
+            -r requirements.txt \
+            "${BIFROST_URL%/}/api/cli/download/bifrost-cli.tar.gz"
+
+      - name: Solution tests
+        run: python -m pytest -q tests
+
+      - name: Version policy unit tests
+        run: python -m pytest -q .github/scripts
+
+  app-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/bifrost-docs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      # Like `bifrost solution sdk update`, install the SDK into node_modules
+      # without recording it in package.json or package-lock.json. Unlike the
+      # CLI (--package-lock=false), keep the lockfile in force so every other
+      # package stays at its locked version.
+      - name: Install the instance's web SDK
+        run: |
+          npm install --no-save --no-audit --no-fund \
+            "bifrost@${BIFROST_URL%/}/api/sdk/download"
+          test -f node_modules/bifrost/package.json
+          node -p '"bifrost SDK " + require("./node_modules/bifrost/package.json").version'
+          git diff --exit-code -- package.json package-lock.json
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  version-policy:
+    if: github.event_name == 'pull_request' && github.base_ref == 'mtg'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install policy dependencies
+        run: python -m pip install pyyaml packaging
+
+      - name: Require a version bump for deployable changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python .github/scripts/version_policy.py --base "$BASE_SHA" --head "$HEAD_SHA"
